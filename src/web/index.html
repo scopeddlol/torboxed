@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Torboxed</title>
+    <meta name="description" content="Self-hosted TorBox downloader" />
+    <link rel="icon" href="./favicon.ico" sizes="48x48" />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <meta name="theme-color" content="#0b0d17" />
+    <script>
+      // Paint the saved theme before React loads, so there is no flash.
+      try {
+        var v = JSON.parse(localStorage.getItem('torboxed.themeVars') || 'null');
+        if (v) for (var k in v) document.documentElement.style.setProperty(k, v[k]);
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

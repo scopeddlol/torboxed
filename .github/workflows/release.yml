@@ -1,0 +1,73 @@
+name: Windows app
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g. 1.0.1). Leave empty to use package.json.'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Windows installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set version
+        shell: bash
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then VERSION="${GITHUB_REF#refs/tags/v}"; fi
+          if [[ -n "$VERSION" ]]; then npm version "$VERSION" --no-git-tag-version --allow-same-version; fi
+          echo "Building version $(node -p "require('./package.json').version")"
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Package (NSIS installer + portable)
+        run: npx electron-builder --win --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: torboxed-windows
+          path: |
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: torboxed-windows
+          path: release
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.exe
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            **Windows:** download `Torboxed-Setup-*.exe` (installer) or `Torboxed-Portable-*.exe` (no install needed).
+
+            **Docker:**
+            ```bash
+            docker pull ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ```

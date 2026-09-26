@@ -1,0 +1,124 @@
+{
+  "name": "torboxed",
+  "productName": "Torboxed",
+  "version": "1.0.0",
+  "description": "A beautiful self-hosted downloader powered by TorBox, with a qBittorrent-compatible API for Sonarr & Radarr.",
+  "author": {
+    "name": "Torboxed Contributors"
+  },
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "dist/desktop/main.cjs",
+  "homepage": "https://github.com/scopeddlol/torboxed",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/scopeddlol/torboxed.git"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c magenta,cyan \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "tsx watch src/server/main.ts",
+    "dev:web": "vite",
+    "build": "npm run build:web && npm run build:node",
+    "build:web": "vite build",
+    "build:node": "node scripts/build.mjs",
+    "start": "node dist/server/index.cjs",
+    "desktop": "npm run build && electron .",
+    "dist:win": "npm run build && electron-builder --win --publish never",
+    "icons": "node scripts/generate-icons.mjs",
+    "demo": "npm run build:web && tsx scripts/demo.ts",
+    "screenshots": "tsx scripts/screenshots.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "build": {
+    "appId": "app.torboxed.desktop",
+    "productName": "Torboxed",
+    "copyright": "Copyright © 2026 Torboxed Contributors",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Torboxed",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "artifactName": "Torboxed-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "Torboxed-Portable-${version}.${ext}"
+    },
+    "publish": null,
+    "fileAssociations": [
+      {
+        "ext": "torrent",
+        "name": "Torrent file",
+        "description": "BitTorrent file",
+        "icon": "build/icon.ico",
+        "role": "Viewer"
+      }
+    ],
+    "protocols": [
+      {
+        "name": "Magnet link",
+        "schemes": [
+          "magnet"
+        ]
+      }
+    ]
+  },
+  "devDependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@resvg/resvg-js": "^2.6.2",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^22.20.4",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "concurrently": "^10.0.5",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
+    "express": "^5.2.1",
+    "lucide-react": "^1.48.0",
+    "multer": "^2.0.2",
+    "playwright-core": "^1.56.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "recharts": "^3.10.1",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9.3",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2",
+    "zustand": "^5.0.15"
+  }
+}

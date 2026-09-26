@@ -1,0 +1,45 @@
+# Torboxed — self-hosted TorBox downloader
+#
+#   docker compose up -d      →  open http://<your-server>:8080
+#
+# Everything else (API key, folders, tags, speed limits, themes…) is
+# configured inside the app. There are no config files to edit.
+
+services:
+  torboxed:
+    image: ghcr.io/scopeddlol/torboxed:latest
+    # build: .                      # ← or build from source instead
+    container_name: torboxed
+    restart: unless-stopped
+    ports:
+      - "8080:8080"                 # web UI + qBittorrent API (change the left side only)
+    environment:
+      - PUID=1000                   # user/group that will own downloaded files
+      - PGID=1000
+      - TZ=Etc/UTC                  # your timezone, e.g. Europe/London
+    volumes:
+      - ./config:/config            # app database (settings, history, analytics)
+      - /path/to/downloads:/downloads
+
+  # ── Optional: Sonarr & Radarr in the same stack ─────────────────────────
+  # Mount the SAME host folder at the SAME path (/downloads) in every
+  # container so imports work without remote path mappings. In Sonarr/Radarr
+  # add a qBittorrent download client with host "torboxed" and port 8080.
+  #
+  # sonarr:
+  #   image: lscr.io/linuxserver/sonarr:latest
+  #   environment: [PUID=1000, PGID=1000, TZ=Etc/UTC]
+  #   volumes:
+  #     - ./sonarr:/config
+  #     - /path/to/downloads:/downloads
+  #     - /path/to/tv:/tv
+  #   ports: ["8989:8989"]
+  #
+  # radarr:
+  #   image: lscr.io/linuxserver/radarr:latest
+  #   environment: [PUID=1000, PGID=1000, TZ=Etc/UTC]
+  #   volumes:
+  #     - ./radarr:/config
+  #     - /path/to/downloads:/downloads
+  #     - /path/to/movies:/movies
+  #   ports: ["7878:7878"]

@@ -11,6 +11,8 @@ export class Stats {
   private minuteStart = Math.floor(Date.now() / MINUTE) * MINUTE;
   private minuteSum = 0;
   private minuteCount = 0;
+  private currentHourKey = String(Math.floor(Date.now() / HOUR) * HOUR);
+  private nextHourAt = (Math.floor(Date.now() / HOUR) + 1) * HOUR;
 
   constructor(private readonly store: Store) {}
 
@@ -19,8 +21,12 @@ export class Stats {
   }
 
   addBytes(n: number) {
-    const hour = String(Math.floor(Date.now() / HOUR) * HOUR);
-    this.s.hourly[hour] = (this.s.hourly[hour] ?? 0) + n;
+    const now = Date.now();
+    if (now >= this.nextHourAt) {
+      this.currentHourKey = String(Math.floor(now / HOUR) * HOUR);
+      this.nextHourAt = (Math.floor(now / HOUR) + 1) * HOUR;
+    }
+    this.s.hourly[this.currentHourKey] = (this.s.hourly[this.currentHourKey] ?? 0) + n;
     this.s.totalBytes += n;
     this.sessionBytes += n;
   }

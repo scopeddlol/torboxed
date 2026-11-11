@@ -46,6 +46,12 @@ export interface RemoveOptions {
 export const TAG_COLORS = ['#8b5cf6', '#06b6d4', '#f59e0b', '#10b981', '#ec4899', '#3b82f6', '#ef4444', '#84cc16', '#f97316', '#14b8a6'];
 
 const STALL_TIMEOUT_MS = 60_000;
+const DEFAULT_STREAMS_PER_FILE = Math.min(
+  16,
+  Math.max(1, Number(process.env.TORBOXED_STREAMS_PER_FILE || 8)),
+);
+const MIN_CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB per stream minimum
+const MIN_PARALLEL_FILE_SIZE = 10 * 1024 * 1024; // 10 MB minimum to use multi-stream
 
 const randomId = () => randomBytes(20).toString('hex');
 const byOrder = (a: Job, b: Job) => a.order - b.order || a.addedAt - b.addedAt;
@@ -590,6 +596,7 @@ export class Manager extends EventEmitter {
   private async downloadFile(job: Job, f: JobFile, signal: AbortSignal) {
     const dest = path.join(job.savePath, f.path);
     const part = `${dest}.part`;
+    const metaPath = `${dest}.part.chunks.json`;
     await fs.promises.mkdir(path.dirname(dest), { recursive: true });
 
     // Finished in an earlier run but the state wasn't saved yet.
@@ -598,6 +605,179 @@ export class Manager extends EventEmitter {
       this.recount(job);
       return;
     }
+
+    const url = await this.torbox.requestDownload(job.torboxId!, f.id);
+
+    // Can we use parallel multi-stream segmented downloading?
+    const canSegment =
+      f.size >= MIN_PARALLEL_FILE_SIZE &&
+      DEFAULT_STREAMS_PER_FILE > 1 &&
+      (fileSize(part) < 0 || fs.existsSync(metaPath));
+
+    if (canSegment) {
+      try {
+        await this.downloadFileSegmented(job, f, signal, url, dest, part, metaPath);
+        return;
+      } catch (e) {
+        if (signal.aborted) throw e;
+        log.warn(`Segmented download failed for "${f.path}", falling back to single stream: ${errMsg(e)}`);
+      }
+    }
+
+    await this.downloadFileSingle(job, f, signal, url, dest, part);
+  }
+
+  private async downloadFileSegmented(
+    job: Job,
+    f: JobFile,
+    signal: AbortSignal,
+    url: string,
+    dest: string,
+    part: string,
+    metaPath: string,
+  ) {
+    const numStreams = Math.min(
+      DEFAULT_STREAMS_PER_FILE,
+      Math.max(1, Math.floor(f.size / MIN_CHUNK_SIZE)),
+    );
+    if (numStreams <= 1) {
+      await this.downloadFileSingle(job, f, signal, url, dest, part);
+      return;
+    }
+
+    let segments: { index: number; start: number; current: number; end: number }[] = [];
+    if (fs.existsSync(metaPath) && fs.existsSync(part) && fileSize(part) === f.size) {
+      try {
+        const raw = JSON.parse(await fs.promises.readFile(metaPath, 'utf8'));
+        if (Array.isArray(raw?.segments) && raw.segments.length > 0 && raw.fileSize === f.size) {
+          segments = raw.segments;
+        }
+      } catch {
+        segments = [];
+      }
+    }
+
+    if (segments.length === 0) {
+      const chunkSize = Math.ceil(f.size / numStreams);
+      for (let i = 0; i < numStreams; i++) {
+        const start = i * chunkSize;
+        const end = i === numStreams - 1 ? f.size - 1 : (i + 1) * chunkSize - 1;
+        segments.push({ index: i, start, current: start, end });
+      }
+    }
+
+    // Pre-allocate or open part file
+    const fh = await fs.promises.open(part, fs.existsSync(part) ? 'r+' : 'w+');
+    try {
+      if (fileSize(part) !== f.size) {
+        await fh.truncate(f.size);
+      }
+    } catch (err) {
+      await fh.close();
+      throw err;
+    }
+
+    // Calculate downloaded so far
+    const totalDownloaded = segments.reduce((sum, s) => sum + (s.current - s.start), 0);
+    f.downloaded = totalDownloaded;
+    this.recount(job);
+
+    const stall = new AbortController();
+    const combined = AbortSignal.any([signal, stall.signal]);
+    let lastActivity = Date.now();
+
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastActivity > STALL_TIMEOUT_MS) {
+        stall.abort(new Error('Connection stalled (no data for 60s)'));
+      }
+    }, 5000);
+
+    // Save segment metadata debounced
+    let savePending = false;
+    const saveMeta = async () => {
+      if (savePending) return;
+      savePending = true;
+      try {
+        const tmpMeta = `${metaPath}.tmp`;
+        await fs.promises.writeFile(tmpMeta, JSON.stringify({ fileSize: f.size, segments }), 'utf8');
+        await fs.promises.rename(tmpMeta, metaPath);
+      } catch {
+        /* best effort */
+      } finally {
+        savePending = false;
+      }
+    };
+    const metaInterval = setInterval(() => void saveMeta(), 2000);
+
+    try {
+      await Promise.all(
+        segments.map(async (seg) => {
+          if (seg.current > seg.end) return; // already finished this segment
+          const segRes = await fetch(url, {
+            headers: { Range: `bytes=${seg.current}-${seg.end}` },
+            signal: combined,
+          });
+
+          if (segRes.status === 416) {
+            seg.current = seg.end + 1;
+            return;
+          }
+          if (segRes.status !== 206 || !segRes.body) {
+            throw new Error(`Server returned HTTP ${segRes.status} for Range request`);
+          }
+
+          for await (const chunk of segRes.body as unknown as AsyncIterable<Uint8Array>) {
+            lastActivity = Date.now();
+            if (this.throttle.limit > 0) {
+              await this.throttle.take(chunk.byteLength, combined);
+            }
+            await fh.write(chunk, 0, chunk.byteLength, seg.current);
+            seg.current += chunk.byteLength;
+            this.count(job, f, chunk.byteLength);
+          }
+        }),
+      );
+
+      clearInterval(watchdog);
+      clearInterval(metaInterval);
+
+      if (stall.signal.aborted) throw stall.signal.reason;
+
+      // Verify completion
+      const allDone = segments.every((s) => s.current > s.end);
+      if (!allDone) {
+        throw new Error('Connection closed before all segments finished downloading');
+      }
+
+      await fh.sync();
+      await fh.close();
+
+      await fs.promises.rm(metaPath, { force: true });
+      await fs.promises.rm(dest, { force: true });
+      await fs.promises.rename(part, dest);
+      f.downloaded = f.size;
+    } catch (e) {
+      clearInterval(watchdog);
+      clearInterval(metaInterval);
+      try {
+        await fh.close();
+      } catch {
+        /* ignore */
+      }
+      void saveMeta();
+      if (stall.signal.aborted && !signal.aborted) throw stall.signal.reason;
+      throw e;
+    }
+  }
+
+  private async downloadFileSingle(
+    job: Job,
+    f: JobFile,
+    signal: AbortSignal,
+    url: string,
+    dest: string,
+    part: string,
+  ) {
     let start = Math.max(0, fileSize(part));
     if (f.size > 0 && start > f.size) {
       await fs.promises.rm(part, { force: true });
@@ -611,14 +791,14 @@ export class Manager extends EventEmitter {
       return;
     }
 
-    const url = await this.torbox.requestDownload(job.torboxId!, f.id);
     const stall = new AbortController();
     const combined = AbortSignal.any([signal, stall.signal]);
-    let stallTimer = setTimeout(() => stall.abort(new Error('Connection stalled (no data for 60s)')), STALL_TIMEOUT_MS);
-    const resetStall = () => {
-      clearTimeout(stallTimer);
-      stallTimer = setTimeout(() => stall.abort(new Error('Connection stalled (no data for 60s)')), STALL_TIMEOUT_MS);
-    };
+    let lastActivity = Date.now();
+    const watchdog = setInterval(() => {
+      if (Date.now() - lastActivity > STALL_TIMEOUT_MS) {
+        stall.abort(new Error('Connection stalled (no data for 60s)'));
+      }
+    }, 5000);
 
     try {
       const res = await fetch(url, {
@@ -637,14 +817,19 @@ export class Manager extends EventEmitter {
         f.downloaded = 0;
         this.recount(job);
       }
-      const ws = fs.createWriteStream(part, { flags: start > 0 ? 'a' : 'w' });
+      const ws = fs.createWriteStream(part, {
+        flags: start > 0 ? 'a' : 'w',
+        highWaterMark: 8 * 1024 * 1024, // 8 MB buffer for high throughput
+      });
       let wsError: Error | null = null;
       ws.on('error', (err) => (wsError = err));
       try {
         for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
-          resetStall();
+          lastActivity = Date.now();
           if (wsError) throw wsError;
-          await this.throttle.take(chunk.byteLength, combined);
+          if (this.throttle.limit > 0) {
+            await this.throttle.take(chunk.byteLength, combined);
+          }
           if (!ws.write(chunk)) await once(ws, 'drain', { signal: combined });
           this.count(job, f, chunk.byteLength);
         }
@@ -665,7 +850,7 @@ export class Manager extends EventEmitter {
       if (stall.signal.aborted && !signal.aborted) throw stall.signal.reason;
       throw e;
     } finally {
-      clearTimeout(stallTimer);
+      clearInterval(watchdog);
     }
   }
 

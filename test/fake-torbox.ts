@@ -121,12 +121,13 @@ export async function startFakeTorBox(opts: { readyAfterPolls?: number } = {}): 
     const t = torrents.get(Number(req.params.tid));
     const f = t?.files.find((x) => x.id === Number(req.params.fid));
     if (!f) return void res.status(404).end();
-    const range = /bytes=(\d+)-/.exec(req.headers.range ?? '');
+    const range = /bytes=(\d+)-(\d+)?/.exec(req.headers.range ?? '');
     if (range) {
       const start = Number(range[1]);
+      const end = range[2] ? Number(range[2]) : f.size - 1;
       if (start >= f.size) return void res.status(416).end();
-      res.status(206).setHeader('Content-Range', `bytes ${start}-${f.size - 1}/${f.size}`);
-      return void res.end(f.data.subarray(start));
+      res.status(206).setHeader('Content-Range', `bytes ${start}-${end}/${f.size}`);
+      return void res.end(f.data.subarray(start, end + 1));
     }
     res.end(f.data);
   });
